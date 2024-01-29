@@ -1,7 +1,6 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
 project(min_nl_opts)
 
-
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_PREFIX_PATH /home/marcus/workspace/practical\ software/coding/matplotlib-cpp/build/install)
 

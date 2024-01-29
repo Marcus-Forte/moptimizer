@@ -2,22 +2,39 @@
 #include <algorithm>
 #include <iostream>
 #include <numeric>
-#include <thread>
 
 #include <matplotlibcpp.h>
-// #include <mat
 namespace plt = matplotlibcpp;
 
-const int data_size = 7;
-const std::vector<double> x_data{0.038, 0.194, 0.425, 0.626, 1.253, 2.5, 3.70};
-const std::vector<double> y_data{0.05, 0.127, 0.094, 0.2122, 0.2729, 0.2665, 0.3317};
+const double x_data[]{0.038, 0.194, 0.425, 0.626, 1.253, 2.5, 3.70};
+const double y_data[]{0.05, 0.127, 0.094, 0.2122, 0.2729, 0.2665, 0.3317};
 
-// Define function
-void reaction_rate(const double *x, double *f_x, const double *data_x, const double *data_y, int index)
+const size_t data_size = sizeof(x_data) / sizeof(double);
+
+struct data_
 {
-    f_x[0] = data_y[index] - (x[0] * data_x[index]) / (x[1] + data_x[index]);
+    double x_;
+    double y_;
+};
+
+double reaction_rate(const double x[2], data_ measured)
+{
+    return measured.y_ - (x[0] * measured.x_) / (x[1] + measured.x_);
 }
 
+struct model
+{
+    model(const double *x) : x_(x)
+    {
+    }
+
+    double operator()(data_ measurement)
+    {
+        return reaction_rate(x_, measurement);
+    }
+
+    const double *x_;
+};
 
 int main()
 {
@@ -25,37 +42,41 @@ int main()
     Eigen::Matrix<double, data_size, 2> jacobian;
     Eigen::Matrix<double, 2, 2> hessian;
     Eigen::Matrix<double, 2, 1> b;
+    Eigen::Matrix<double, data_size, 1> f_x;
     const float epsilon = 0.01;
     // define parameter vector.
     x0.setZero();
 
-    // Compute sum
+    std::vector<data_> dataset;
+
+    for (int i = 0; i < data_size; ++i)
+    {
+        dataset.push_back({x_data[i], y_data[i]});
+    }
+
+    // Gauss Newton
     for (int iterations = 0; iterations < 15; ++iterations)
     {
-        double f_x[data_size];
-        double f_x_plus[data_size];
+        // Compute error
+        std::transform(dataset.begin(), dataset.end(), f_x.begin(), model(x0.data()));
 
-        // Comput error
-        for (int i = 0; i < data_size; ++i)
-        {
-            reaction_rate(x0.data(), &f_x[i], x_data.data(), y_data.data(), i);
-        }
+        double error_sum = std::transform_reduce(
+            dataset.begin(), dataset.end(), 0.0f, [](double a, double b)
+            { return a * a + b * b; },
+            model(x0.data()));
 
         // Compute derivative
+        Eigen::Matrix<double, data_size, 1> f_x_plus_;
         for (int p_dim = 0; p_dim < 2; ++p_dim)
         {
             Eigen::Matrix<double, 2, 1> x0_plus(x0);
             x0_plus[p_dim] += epsilon;
-            for (int i = 0; i < data_size; ++i)
-            {
-                reaction_rate(x0_plus.data(), &f_x_plus[i], x_data.data(), y_data.data(), i);
-                jacobian(i, p_dim) = (f_x_plus[i] - f_x[i]) / epsilon;
-            }
+            std::transform(dataset.begin(), dataset.end(), f_x_plus_.begin(), model(x0_plus.data()));
+            jacobian.col(p_dim) = (f_x_plus_ - f_x) / epsilon;
         }
 
-        Eigen::Map<Eigen::Matrix<double, data_size, 1>> residuals(f_x);
         hessian = jacobian.transpose() * jacobian;
-        b = jacobian.transpose() * residuals;
+        b = jacobian.transpose() * f_x;
 
         Eigen::Matrix<double, 2, 1> delta;
 
@@ -65,11 +86,11 @@ int main()
 
         x0 += delta;
 
-        std::vector<double> r_vec(f_x, f_x + data_size);
+        std::cout << "Error = " << error_sum << "\n";
+
         plt::clf();
 
         plt::plot(x_data, y_data, ".");
-        // draw graph
         std::vector<double> x_data_fine(100);
         float val = 0.0f;
         for (int j = 0; j < 100; j++, val += 0.037)
@@ -83,8 +104,4 @@ int main()
 
         plt::pause(1.0);
     }
-
-    std::cout << "x = " << x0 << std::endl;
-
-    return 0;
 }
