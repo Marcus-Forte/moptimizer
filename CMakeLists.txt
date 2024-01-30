@@ -11,3 +11,5 @@ add_executable(gauss src/gauss.cc)
 
 target_link_libraries(main Eigen3::Eigen matplotlib_cpp::matplotlib_cpp)
 target_link_libraries(gauss Eigen3::Eigen matplotlib_cpp::matplotlib_cpp)
+target_compile_definitions(main PUBLIC -DUSE_MATPLOTLIB)
+target_compile_definitions(gauss PUBLIC -DUSE_MATPLOTLIB)

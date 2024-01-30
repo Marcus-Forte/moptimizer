@@ -2,136 +2,138 @@
 #include <algorithm>
 #include <iostream>
 #include <numeric>
-#include <thread>
-#include <random>
 
+#include "util.hh"
+#include "data_loader.hh"
+
+#ifdef USE_MATPLOTLIB
 #include <matplotlibcpp.h>
 namespace plt = matplotlibcpp;
+#endif
 
-struct gauss_curve_param
+struct measurement_data_
 {
-    gauss_curve_param(double a0, double a1, double a2, double a3) : peak(a0), height(a1), l_width(a2), r_width(a3) {}
-    double peak;
-    double height;
-    double l_width;
-    double r_width;
+    double x_;
+    double y_;
 };
 
-double gauss_dissym(const gauss_curve_param &parameters, const double x)
+struct model
 {
-    const double factor = x - parameters.peak;
-    double y;
-    if (x < parameters.peak)
-        y = parameters.height * exp(-factor * factor / parameters.l_width);
-    else
-        y = parameters.height * exp(-factor * factor / parameters.r_width);
+    model(const double *beta) : beta_(beta) {}
 
-    return y;
-}
+    // Run error model.
+    inline double operator()(const measurement_data_ &measurement) const
+    {
+        return measurement.y_ - (*this)(measurement.x_) /* (*this)(measurement.x_) */;
+    }
 
-std::vector<double> gauss_dissym_v(const gauss_curve_param &parameters, const std::vector<double> &x)
+    // y = f(x)
+    inline double operator()(const double x) const
+    {
+        const double factor0 = x - beta_[3];
+        const double factor1 = x - beta_[6];
+        return beta_[0] * exp(-beta_[1] * x) + beta_[2] * exp(-factor0 * factor0 / beta_[4]) + beta_[5] * exp(-factor1 * factor1 / beta_[7]);
+    }
+
+    const double *beta_;
+};
+
+int main(int argc, char **argv)
 {
-    std::vector<double> y(x.size());
+    double lm_lambda = 10.0;
 
-    for (int i = 0; i < x.size(); ++i)
-        y[i] = gauss_dissym(parameters, x[i]);
+    if (argc > 1)
+        lm_lambda = atoi(argv[1]);
 
-    return y;
-}
+    std::vector<double> data_x;
+    std::vector<double> data_y;
+    loadData("../data/gauss1.txt", data_x, data_y);
 
-int main()
-{
-    const int data_size = 200;
-    gauss_curve_param p(0, 10, 1, 0.3);
-    std::vector<double> x(data_size);
-    double min = -3.0;
-    double max = 3.0;
-    double step = (max - min) / data_size;
+    int data_size = data_x.size();
+    std::cout << data_size << "\n";
+    const int num_parameters = 8;
+    Eigen::Matrix<double, num_parameters, 1> x0;
+
+    Eigen::Matrix<double, Eigen::Dynamic, num_parameters> jacobian;
+    Eigen::Matrix<double, num_parameters, num_parameters> hessian;
+
+    Eigen::Matrix<double, num_parameters, 1> b;
+    Eigen::Matrix<double, Eigen::Dynamic, 1> f_x;
+    Eigen::Matrix<double, Eigen::Dynamic, 1> f_x_plus_;
+    const float epsilon = 0.0001;
+    // // define parameter vector.
+    x0.setZero();
+    x0[0] = 100;
+    x0[1] = 0.01;
+    x0[2] = 1;
+    x0[3] = 100;
+    x0[4] = 1;
+    x0[5] = 1;
+    x0[6] = 150;
+    x0[7] = 20;
+
+    std::vector<measurement_data_> dataset;
     for (int i = 0; i < data_size; ++i)
     {
-        x[i] = min + i * step;
+        dataset.push_back({data_x[i], data_y[i]});
     }
-    std::vector<double> y = gauss_dissym_v(p, x);
 
-    std::default_random_engine generator;
-    std::normal_distribution<double> dist(0.0, 0.6);
+    f_x.resize(data_size);
+    f_x_plus_.resize(data_size);
+    jacobian.resize(data_size, Eigen::NoChange);
 
-    std::transform(y.begin(), y.end(), y.begin(), [&](double x)
-                   { return x + dist(generator); });
-
+    // // Gauss Newton
+    for (int iterations = 0; iterations < 100; ++iterations)
     {
-        const int dim_param = 4;
-        Eigen::Matrix<double, dim_param, 1> x0;
-        Eigen::Matrix<double, data_size, dim_param> jacobian;
-        Eigen::Matrix<double, dim_param, dim_param> hessian;
-        Eigen::Matrix<double, dim_param, 1> b;
+        // Compute error
+        std::transform(dataset.begin(), dataset.end(), f_x.begin(), model(x0.data()));
 
-        x0.setZero();
-        x0[0] = -0.30;
-        x0[1] = 2;
-        x0[2] = 0.3;
-        x0[3] = 0.1;
+        // std::cout << f_x << std::endl;
+        // exit(0);
 
-        Eigen::Matrix<double, data_size, 1> f_x;
-        Eigen::Matrix<double, data_size, 1> f_x_plus;
-        Eigen::Matrix<double, data_size, 1> f_x_minus;
+        double error_sum = std::transform_reduce(
+            dataset.begin(), dataset.end(), 0.0f, [](double init, double b)
+            { return init + b * b; },
+            model(x0.data()));
 
-        // Build parameters
-        for (int iterations = 0; iterations < 15; ++iterations)
+        // // Compute derivative
+
+        for (int p_dim = 0; p_dim < num_parameters; ++p_dim)
         {
-            const gauss_curve_param param(x0[0], x0[1], x0[2], x0[3]);
-
-            // Compute error
-            for (int i = 0; i < data_size; ++i)
-            {
-                f_x[i] = y[i] - gauss_dissym(param, x[i]);
-            }
-
-            // Compute jacobian
-            const double epsilon = 1e-7;
-            for (int p_dim = 0; p_dim < dim_param; ++p_dim)
-            {
-                Eigen::Matrix<double, dim_param, 1> x0_plus(x0);
-                Eigen::Matrix<double, dim_param, 1> x0_minus(x0);
-                x0_plus[p_dim] += epsilon;
-                x0_minus[p_dim] -= epsilon;
-
-                // std::cout << x0_plus << " || " << x0_minus << std::endl;
-
-                // exit(0);
-                const gauss_curve_param param_plus(x0_plus[0], x0_plus[1], x0_plus[2], x0_plus[3]);
-                const gauss_curve_param param_minus(x0_minus[0], x0_minus[1], x0_minus[2], x0_minus[3]);
-                for (int i = 0; i < data_size; ++i)
-                {
-                    f_x_plus[i] = y[i] - gauss_dissym(param_plus, x[i]);
-                    f_x_minus[i] = y[i] - gauss_dissym(param_minus, x[i]);
-                    jacobian(i, p_dim) = (f_x_plus[i] - f_x_minus[i]) / (2 * epsilon);
-                }
-            }
-
-            hessian = jacobian.transpose() * jacobian;
-            b = jacobian.transpose() * f_x;
-
-            Eigen::Matrix<double, dim_param, 1> delta;
-
-            Eigen::LDLT<Eigen::Matrix<double, dim_param, dim_param>> solver(hessian);
-
-            delta = solver.solve(-b);
-
-            x0 += delta;
-
-            std::cout << hessian << "\n\n";
-            std::cout << x0 << "\n\n";
-
-            plt::clf();
-
-            std::vector<double> y_opt = gauss_dissym_v(param, x);
-
-            plt::plot(x, y);
-            plt::plot(x, y_opt, "r--");
-            plt::grid(true);
-
-            plt::pause(0.25);
+            Eigen::Matrix<double, num_parameters, 1> x0_plus(x0);
+            x0_plus[p_dim] += epsilon;
+            std::transform(dataset.begin(), dataset.end(), f_x_plus_.begin(), model(x0_plus.data()));
+            jacobian.col(p_dim) = (f_x_plus_ - f_x) / epsilon;
         }
+
+        hessian = jacobian.transpose() * jacobian;
+
+        b = jacobian.transpose() * f_x;
+
+        Eigen::Matrix<double, num_parameters, 1> delta;
+
+        Eigen::Matrix<double, num_parameters, num_parameters> hessian_diagonal;
+        hessian_diagonal = hessian.diagonal().asDiagonal();
+        Eigen::LDLT<Eigen::Matrix<double, num_parameters, num_parameters>> solver(hessian + lm_lambda * hessian_diagonal);
+
+        delta = solver.solve(-b);
+
+        // std::cout << "delta = " << delta << std::endl;
+
+        x0 += delta;
+
+        std::cout << "Error = " << error_sum << "\n";
+
+#ifdef USE_MATPLOTLIB
+        const size_t num_elements_model_curve = 100;
+        plt::clf();
+        plt::plot(data_x, data_y, ".");
+        auto x_data_model = util::linspace(0.0, 250.0, num_elements_model_curve);
+        std::vector<double> y_data_model(num_elements_model_curve);
+        std::transform(x_data_model.begin(), x_data_model.end(), y_data_model.begin(), model(x0.data()));
+        plt::plot(x_data_model, y_data_model, "r--");
+        plt::pause(0.1);
+#endif
     }
+    std::cout << "Final X = " << x0 << std::endl;
 }
