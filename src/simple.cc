@@ -42,15 +42,8 @@ struct model
 
 int main()
 {
-    Eigen::Matrix<double, 2, 1> x0;
-    Eigen::Matrix<double, data_size, 2> jacobian;
-    Eigen::Matrix<double, 2, 2> hessian;
-    Eigen::Matrix<double, 2, 1> b;
-    Eigen::Matrix<double, data_size, 1> f_x;
-    const float epsilon = 0.01;
-    // define parameter vector.
-    x0.setZero();
 
+    // define parameter vector.
     std::vector<measurement_data_> dataset;
 
     for (int i = 0; i < data_size; ++i)
@@ -59,6 +52,13 @@ int main()
     }
 
     // Gauss Newton
+    Eigen::Matrix<double, 2, 1> x0;
+    x0.setZero();
+    Eigen::Matrix<double, data_size, 2> jacobian;
+    Eigen::Matrix<double, 2, 2> hessian;
+    Eigen::Matrix<double, 2, 1> b;
+    Eigen::Matrix<double, data_size, 1> f_x;
+    const double epsilon = 0.01;
     for (int iterations = 0; iterations < 10; ++iterations)
     {
         // Compute error
