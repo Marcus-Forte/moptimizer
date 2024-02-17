@@ -1,106 +1,168 @@
+// #include <thrust/device_vector.h>
+// #include <thrust/sequence.h>
+
 #include <Eigen/Dense>
 #include <algorithm>
+#include <execution>
 #include <iostream>
 #include <numeric>
 
-#include "util.hh"
+#include "cost.hh"
 
-#ifdef USE_MATPLOTLIB
-#include <matplotlibcpp.h>
-namespace plt = matplotlibcpp;
-#endif
+//   F = 1/2 (f1^2 + f2^2 + f3^2 + f4^2)
+//
+//   f1 = x1 + 10*x2;
+//   f2 = sqrt(5) * (x3 - x4)
+//   f3 = (x2 - 2*x3)^2
+//   f4 = sqrt(10) * (x1 - x4)^2
 
-const double x_data[]{0.038, 0.194, 0.425, 0.626, 1.253, 2.5, 3.70};
-const double y_data[]{0.05, 0.127, 0.094, 0.2122, 0.2729, 0.2665, 0.3317};
+// struct Model {
+//   Eigen::Vector4d operator()(const double* x) const {
+//     double&& fx0 = x[0] + 10 * x[1];
+//     double&& fx1 = sqrt(5) * (x[2] - x[3]);
+//     double&& fx2 = (x[1] - 2 * x[2]) * (x[1] - 2 * x[2]);
+//     double&& fx3 = sqrt(10) * (x[0] - x[3]) * (x[0] - x[3]);
+//     return {fx0, fx1, fx2, fx3};
+//   }
+// };
 
-const size_t data_size = sizeof(x_data) / sizeof(double);
+// // Jacobian
+// struct ModelJ {
+//   Eigen::Matrix4d operator()(const double* x) const {
+//     Eigen::Matrix4d jacobian;
+//     jacobian(0, 0) = 1;
+//     jacobian(1, 0) = 0;
+//     jacobian(2, 0) = 0;
+//     jacobian(3, 0) = sqrt(10) * 2 * (x[0] - x[3]);
 
-struct measurement_data_
-{
-    double x_;
-    double y_;
+//     // Df / dx1
+//     jacobian(0, 1) = 10;
+//     jacobian(1, 1) = 0;
+//     jacobian(2, 1) = 2 * (x[1] + 2 * x[2]);
+//     jacobian(3, 1) = 0;
+
+//     // Df / dx2
+//     jacobian(0, 2) = 0;
+//     jacobian(1, 2) = sqrt(5);
+//     jacobian(2, 2) = 2 * (x[1] + 2 * x[2]) * (-2);
+//     jacobian(3, 2) = 0;
+
+//     // Df / dx3
+//     jacobian(0, 3) = 0;
+//     jacobian(1, 3) = -sqrt(5);
+//     jacobian(2, 3) = 0;
+//     jacobian(3, 3) = sqrt(10) * 2 * (x[0] - x[3]) * (-1);
+//     return jacobian;
+//   }
+// };
+
+double x_data[7] = {0.038, 0.194, 0.425, 0.626, 1.253, 2.5, 3.74};
+double y_data[7] = {0.05, 0.127, 0.094, 0.2122, 0.2729, 0.2665, 0.3317};
+
+struct model {
+  model(const double* p) : p_(p) {}
+  double operator()(const double& in, const double& measured) const {
+     return measured - (p_[0] * in) / (p_[1] + in); }
+
+  const double* p_;
 };
 
-struct model
-{
-    model(const double *x) : x_(x) {}
+int main() {
+  Eigen::Vector2d parameters{0.1, 0.1};
 
-    // Run error model.
-    inline double operator()(const measurement_data_ &measurement) const
-    {
-        return measurement.y_ - (*this)(measurement.x_) /* (*this)(measurement.x_) */;
-    }
+  moptimizer::Cost<double, double, model> cost(x_data, y_data, 7);
 
-    // y = f(x)
-    inline double operator()(const double x) const
-    {
-        return (x_[0] * x) / (x_[1] + x);
-    }
+  auto total = cost.sum(parameters.data());
+  std::cout << "total = " << total << "\n";
 
-    const double *x_;
-};
+  Eigen::Matrix<double, 2, 2> hessian;
+  Eigen::Matrix<double, 2, 1> b;
 
-int main()
-{
+  cost.linearize<2>(parameters.data(), hessian.data(), b.data());
 
-    // define parameter vector.
-    std::vector<measurement_data_> dataset;
+  std::cout << "class hess: \n";
+  std::cout << hessian << std::endl;
 
-    for (int i = 0; i < data_size; ++i)
-    {
-        dataset.push_back({x_data[i], y_data[i]});
-    }
+  Eigen::Matrix<double, 7, 1> f_x;
+  Eigen::Matrix<double, 7, 1> f_x_plus;
+  Eigen::Matrix<double, 7, 2> jacobian;
+  std::transform(x_data, x_data + 7, y_data, f_x.begin(), model(parameters.data()));
 
-    // Gauss Newton
-    Eigen::Matrix<double, 2, 1> x0;
-    x0.setZero();
-    Eigen::Matrix<double, data_size, 2> jacobian;
-    Eigen::Matrix<double, 2, 2> hessian;
-    Eigen::Matrix<double, 2, 1> b;
-    Eigen::Matrix<double, data_size, 1> f_x;
-    const double epsilon = 0.01;
-    for (int iterations = 0; iterations < 10; ++iterations)
-    {
-        // Compute error
-        std::transform(dataset.begin(), dataset.end(), f_x.begin(), model(x0.data()));
+  std::cout << "f_x = " << f_x << std::endl;
 
-        double error_sum = std::transform_reduce(
-            dataset.begin(), dataset.end(), 0.0f, [](double init, double b)
-            { return init + b * b; },
-            model(x0.data()));
+  for (int dim = 0; dim < 2; ++dim) {
+    const double epsilon = 1e-5;
+    Eigen::Vector2d p_plus(parameters);
+    p_plus[dim] += epsilon;
 
-        // Compute derivative
-        Eigen::Matrix<double, data_size, 1> f_x_plus_;
-        for (int p_dim = 0; p_dim < 2; ++p_dim)
-        {
-            Eigen::Matrix<double, 2, 1> x0_plus(x0);
-            x0_plus[p_dim] += epsilon;
-            std::transform(dataset.begin(), dataset.end(), f_x_plus_.begin(), model(x0_plus.data()));
-            jacobian.col(p_dim) = (f_x_plus_ - f_x) / epsilon;
-        }
+    std::transform(x_data, x_data + 7, y_data, f_x_plus.begin(), model(p_plus.data()));
 
-        hessian = jacobian.transpose() * jacobian;
-        b = jacobian.transpose() * f_x;
+    jacobian.col(dim) = (f_x_plus - f_x) / epsilon;
+  }
+  std::cout << "manual jacobian: \n";
+  std::cout << jacobian << "\n";
+  Eigen::Matrix<double, 2, 2> hess = jacobian.transpose() * jacobian;
+  std::cout << "manual hess: \n";
+  std::cout << hess << "\n";
+  // Numerical jac
+  // for (int it = 0; it < 10; ++it) {
+  //   std::transform(x_data, x_data + 7, y_data, f_x.begin(), model(parameters.data()));
 
-        Eigen::Matrix<double, 2, 1> delta;
+  //   for (int dim = 0; dim < 2; ++dim) {
+  //     const double epsilon = 1e-5;
+  //     Eigen::Vector2d p_plus(parameters);
+  //     p_plus[dim] += epsilon;
 
-        Eigen::LDLT<Eigen::Matrix<double, 2, 2>> solver(hessian);
+  //     std::transform(x_data, x_data + 7, y_data, f_x_plus.begin(), model(p_plus.data()));
 
-        delta = solver.solve(-b);
+  //     jacobian.col(dim) = (f_x_plus - f_x) / epsilon;
+  //   }
+  //   // Numeric
+  //   Eigen::Matrix<double, 2, 2> hessian_numeric_reduce;
+  //   hessian_numeric_reduce.setZero();
+  //   auto sum_numeric =
+  //       std::transform_reduce(x_data, x_data + 7, y_data, hessian_numeric_reduce,
+  //                             tst_functor(),  // reduce
+  //                             [&parameters](const double input, const double measure) {
 
-        x0 += delta;
+  //                               Eigen::Matrix<double, 1, 2> ret;
+  //                               auto model_ = model(parameters.data());
+  //                               const double epsilon = 1e-5;
+  //                               for (int dim = 0; dim < 2; ++dim) {
+  //                                 Eigen::Vector2d p_plus(parameters);
+  //                                 p_plus[dim] += epsilon;
+  //                                 auto model_plus = model(p_plus.data());
+  //                                 ret[dim] = (model_plus(input, measure) - model_(input, measure)) / epsilon;
+  //                               }
+  //                               return ret;
+  //                             });  // transform
 
-        std::cout << "Error = " << error_sum << "\n";
+  // std::cout << "Numeric Reduce: " << sum_numeric << std::endl;
+  //   // Analytic
+  //   Eigen::Matrix<double, 2, 2> hessian_reduce;
+  //   hessian_reduce.setZero();
+  //   auto sum =
+  //       std::transform_reduce( x_data, x_data + 7, y_data, hessian_reduce,
+  //                             tst_functor(),  // reduce
+  //                             [&parameters](const double input, const double measure) {
+  //                               Eigen::Matrix<double, 1, 2> ret;
+  //                               ret[0] = -input / (parameters[1] + input);
+  //                               ret[1] = (parameters[0] * input) / ((parameters[1] + input) * (parameters[1] +
+  //                               input)); return ret;
+  //                             });  // transform
 
-#ifdef USE_MATPLOTLIB
-        const size_t num_elements_model_curve = 100;
-        plt::clf();
-        plt::plot(x_data, y_data, ".");
-        auto x_data_model = util::linspace(0.0, 4.0, num_elements_model_curve);
-        std::vector<double> y_data_model(num_elements_model_curve);
-        std::transform(x_data_model.begin(), x_data_model.end(), y_data_model.begin(), model(x0.data()));
-        plt::plot(x_data_model, y_data_model, "r--");
-        plt::pause(1.0);
-#endif
-    }
+  //   std::cout << "Analytic Reduce:" << sum << std::endl;
+
+  //   Eigen::Matrix<double, 2, 2> hessian = jacobian.transpose() * jacobian;
+  //   Eigen::Matrix<double, 2, 1> b = jacobian.transpose() * f_x;
+  //   std::cout << "numerical:" << hessian << std::endl;
+
+  //   // Solve
+  //   Eigen::Vector2d delta = hessian.ldlt().solve(-b);
+  //   parameters += delta;
+
+  //   std::cout << "parameters: " << parameters.transpose() << "\n";
+  // }
 }
+// ::transform takes 1 or 2 inputs and needs to assign outputs..
+// ::for_each only takes 1 inputs
