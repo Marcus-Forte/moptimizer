@@ -1,4 +1,5 @@
 #include "cost.hh"
+#include "gauss_newton.hh"
 #include "gtest/gtest.h"
 #include "model.hh"
 #include "test_models.h"
@@ -16,16 +17,29 @@ TEST(SimpleModel, Derivatives) {
   Eigen::Matrix<double, parameter_dimension, 1> b_numeric;
   Eigen::Matrix<double, parameter_dimension, parameter_dimension> hessian_analytic;
   Eigen::Matrix<double, parameter_dimension, 1> b_analytic;
-  moptimizer::Cost<double, double, curve_fitting> cost_numeric(data_x, data_y, num_observations);
-  moptimizer::Cost<double, double, curve_fitting, curve_fitting_jacobian> cost_analytic(data_x, data_y,
-                                                                                        num_observations);
+  moptimizer::Cost<2, double, double, curve_fitting> cost_numeric(data_x, data_y, num_observations);
+  moptimizer::Cost<2, double, double, curve_fitting, curve_fitting_jacobian> cost_analytic(data_x, data_y,
+                                                                                           num_observations);
 
-  cost_numeric.linearize<parameter_dimension>(parameters.data(), hessian_numeric.data(), b_numeric.data());
-  cost_analytic.linearize<parameter_dimension>(parameters.data(), hessian_analytic.data(), b_analytic.data());
+  cost_numeric.linearize(parameters.data(), hessian_numeric.data(), b_numeric.data());
+  cost_analytic.linearize(parameters.data(), hessian_analytic.data(), b_analytic.data());
   for (int i = 0; i < hessian_analytic.size(); ++i) {
     EXPECT_NEAR(hessian_analytic(i), hessian_numeric(i), 1e-4);
   }
 
   EXPECT_NEAR(b_analytic[0], b_numeric[0], 1e-4);
   EXPECT_NEAR(b_analytic[1], b_numeric[1], 1e-4);
+}
+
+TEST(SimpleModel, GaussNewton) {
+  Eigen::Vector2d parameters = {0., 0.};
+  Eigen::Matrix<double, 2, 2> hess;
+  Eigen::Matrix<double, 2, 1> b;
+  moptimizer::Cost<2, double, double, simple> cost_numeric(data_x, data_y, num_observations);
+
+  moptimizer::GaussNewton<double> solver(2);
+  solver.addCost(&cost_numeric);
+
+  solver.minimize(parameters.data());
+  std::cout << "final: " << parameters << "\n";
 }

@@ -2,21 +2,24 @@
 
 #include <Eigen/Dense>
 #include <algorithm>
+#include <execution>
 #include <numeric>
 
+#include "Icost.hh"
 #include "jacobian.hh"
 #include "model.hh"
 
 namespace moptimizer {
 
 /// @brief Cost function class.
+/// @tparam parameter_dim parameter dimension
 /// @tparam In Input data type
 /// @tparam Out Measured data type.
 /// @tparam ModelT Fuctor of application model.
 /// @tparam JacobianModelT (optional)  Functor of jacobian model
 /// @tparam Scalar scalar primitive.
-template <class In, class Out, class ModelT, class JacobianModelT = void*, class Scalar = double>
-class Cost {
+template <int parameter_dim, class In, class Out, class ModelT, class JacobianModelT = void*, class Scalar = double>
+class Cost : public ICost<Scalar> {
  public:
   Cost() = delete;
   Cost(const Cost& rhs) = delete;
@@ -31,14 +34,25 @@ class Cost {
                   "ModelT must be inherited from moptimizer::Model");
   }
 
-  /// @brief Computes sum of errors
+  /// @brief Computes sum of squared errors
   /// @param x
   /// @return
   Scalar sum(const Scalar* x) const {
+    constexpr size_t dim_output = sizeof(Out) / sizeof(Scalar);
+    using OutputAsVector = Eigen::Matrix<Scalar, dim_output, 1>;
     Scalar total = 0.;
-    return std::transform_reduce(input_, input_ + num_elements_, measurements_, total,
-                                 std::plus<Out>(),  // reduce. Use operator+() of Out.
-                                 ModelT(x));        // Transform
+    return std::transform_reduce(
+        input_, input_ + num_elements_, measurements_, total,
+        // Reduce
+        [&](const Out& init, const Out& res) -> Scalar {
+          Eigen::Map<const OutputAsVector> init_map(&init);
+          Eigen::Map<const OutputAsVector> res_map(&res);
+
+          // Compute squared error
+          return init + res_map.dot(res_map);
+        },
+        // Transform
+        ModelT(x));
   }
 
   /// @brief Computes the hessian and b vector of a cost function.
@@ -46,8 +60,8 @@ class Cost {
   /// @param x
   /// @param hessian
   /// @param b
-  template <int parameter_dim>
-  void linearize(const Scalar* x, Scalar* hessian, Scalar* b) const {
+  /// @return Sum of squared errors.
+  Scalar linearize(const Scalar* x, Scalar* hessian, Scalar* b) const override {
     constexpr size_t dim_parameter = parameter_dim;
     constexpr size_t dim_output = sizeof(Out) / sizeof(Scalar);
     using HessianType = Eigen::Matrix<Scalar, dim_parameter, dim_parameter>;
@@ -59,7 +73,7 @@ class Cost {
     auto reduce_lambda = [&](ResultPair init, const ResultPair& b) -> ResultPair { return init + b; };
     if constexpr (std::is_same<JacobianModelT, void*>::value) {
       numeric_jacobian<dim_parameter, dim_output, ModelT, In, Out, Scalar> numeric_jacobian(x);
-      result = std::transform_reduce(input_, input_ + num_elements_, measurements_, result,
+      result = std::transform_reduce(std::execution::par, input_, input_ + num_elements_, measurements_, result,
                                      // Reduce
                                      reduce_lambda,
                                      // Transform
@@ -68,7 +82,7 @@ class Cost {
       static_assert(std::is_base_of<JacobianModel<In, JacobianType, Scalar>, JacobianModelT>::value,
                     "ModelT must be inherited from moptimizer::JacobianModel");
       analytic_jacobian<dim_parameter, dim_output, ModelT, JacobianModelT, In, Out, Scalar> analytic_jacobian(x);
-      result = std::transform_reduce(input_, input_ + num_elements_, measurements_, result,
+      result = std::transform_reduce(std::execution::par, input_, input_ + num_elements_, measurements_, result,
                                      // Reduce
                                      reduce_lambda,
                                      // Transform
@@ -80,6 +94,7 @@ class Cost {
     Eigen::Map<ParameterType> ret_b(b);
     ret_h = result.JTJ;
     ret_b = result.JTr;
+    return result.squaredError;
   }
 
  private:

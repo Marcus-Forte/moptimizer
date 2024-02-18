@@ -9,13 +9,14 @@ find_package(TBB REQUIRED)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_library(${PROJECT_NAME} INTERFACE)
-target_include_directories(${PROJECT_NAME} INTERFACE 
+add_library(${PROJECT_NAME} 
+lib/gauss_newton.cc)
+target_include_directories(${PROJECT_NAME} PUBLIC
 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(${PROJECT_NAME} INTERFACE Eigen3::Eigen TBB::tbb)
+target_link_libraries(${PROJECT_NAME}  Eigen3::Eigen TBB::tbb)
 
 link_libraries(${PROJECT_NAME})
 

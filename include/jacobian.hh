@@ -16,16 +16,19 @@ struct jacobian_result_pair {
   jacobian_result_pair() {
     JTJ.setZero();
     JTr.setZero();
+    squaredError = 0;
   }
 
   jacobian_result_pair operator+(const jacobian_result_pair& rhs) {
     this->JTJ += rhs.JTJ;
     this->JTr += rhs.JTr;
+    this->squaredError += rhs.squaredError;
     return *this;
   }
 
   HessianType JTJ;    // JTJ -> Hessian
   ParameterType JTr;  // JTr -> b
+  Scalar squaredError;
 };
 
 /// @brief Numerical jacobian functor.
@@ -69,6 +72,8 @@ struct numeric_jacobian {
     ResultPair res;
     res.JTJ = local_hessian;
     res.JTr = local_b;
+    Eigen::Map<const Eigen::Matrix<Scalar, dim_output, 1>> residual_map((Scalar*)&residual);
+    res.squaredError = residual_map.dot(residual_map);
     return res;
   }
 

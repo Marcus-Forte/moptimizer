@@ -1,6 +1,11 @@
 #pragma once
 
 namespace moptimizer {
+
+/// @brief Model interface
+/// @tparam In
+/// @tparam Out
+/// @tparam Scalar
 template <class In, class Out, class Scalar>
 class Model {
  public:
