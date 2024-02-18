@@ -33,3 +33,15 @@ struct curve_fitting_jacobian : public moptimizer::JacobianModel<double, Eigen::
     return ret;
   }
 };
+
+struct powell : public moptimizer::Model<double, Eigen::Vector4d, double> {
+  powell(const double* parameters) : Model(parameters) {}
+  Eigen::Vector4d operator()(const double& x, const Eigen::Vector4d& measured) const override {
+    Eigen::Vector4d residual;
+    residual[0] = parameters_[0] + 10.0 * parameters_[0];
+    residual[1] = sqrt(5) * (parameters_[2] - parameters_[3]);
+    residual[2] = (parameters_[1] - 2 * parameters_[2]) * (parameters_[1] - 2 * parameters_[2]);
+    residual[3] = sqrt(10) * (parameters_[0] - parameters_[3]) * (parameters_[0] - parameters_[3]);
+    return residual;
+  }
+};
