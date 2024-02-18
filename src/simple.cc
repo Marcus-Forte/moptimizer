@@ -61,10 +61,22 @@ double y_data[7] = {0.05, 0.127, 0.094, 0.2122, 0.2729, 0.2665, 0.3317};
 
 struct model {
   model(const double* p) : p_(p) {}
-  double operator()(const double& in, const double& measured) const {
-     return measured - (p_[0] * in) / (p_[1] + in); }
+  double operator()(const double& in, const double& measured) const { return measured - (p_[0] * in) / (p_[1] + in); }
 
   const double* p_;
+};
+
+struct model_jacobian {
+  model_jacobian(const double* p) : parameters_(p) {}
+
+  Eigen::Matrix<double, 1, 2> operator()(const double& input) const {
+    Eigen::Matrix<double, 1, 2> ret;
+    ret[0] = -input / (parameters_[1] + input);
+    ret[1] = (parameters_[0] * input) / ((parameters_[1] + input) * (parameters_[1] + input));
+    return ret;
+  }
+
+  const double* parameters_;
 };
 
 int main() {
@@ -80,15 +92,16 @@ int main() {
 
   cost.linearize<2>(parameters.data(), hessian.data(), b.data());
 
-  std::cout << "class hess: \n";
+  std::cout << "Class results: \n";
   std::cout << hessian << std::endl;
+  std::cout << b << std::endl;
 
   Eigen::Matrix<double, 7, 1> f_x;
   Eigen::Matrix<double, 7, 1> f_x_plus;
   Eigen::Matrix<double, 7, 2> jacobian;
   std::transform(x_data, x_data + 7, y_data, f_x.begin(), model(parameters.data()));
 
-  std::cout << "f_x = " << f_x << std::endl;
+  // std::cout << "f_x = " << f_x << std::endl;
 
   for (int dim = 0; dim < 2; ++dim) {
     const double epsilon = 1e-5;
@@ -99,11 +112,13 @@ int main() {
 
     jacobian.col(dim) = (f_x_plus - f_x) / epsilon;
   }
-  std::cout << "manual jacobian: \n";
-  std::cout << jacobian << "\n";
-  Eigen::Matrix<double, 2, 2> hess = jacobian.transpose() * jacobian;
-  std::cout << "manual hess: \n";
-  std::cout << hess << "\n";
+  // std::cout << "manual jacobian: \n";
+  // std::cout << jacobian << "\n";
+  Eigen::Matrix<double, 2, 2> manual_hess = jacobian.transpose() * jacobian;
+  Eigen::Matrix<double, 2, 1> manual_b = jacobian.transpose() * f_x;
+  std::cout << "manual results: \n";
+  std::cout << manual_hess << "\n";
+  std::cout << manual_b << "\n";
   // Numerical jac
   // for (int it = 0; it < 10; ++it) {
   //   std::transform(x_data, x_data + 7, y_data, f_x.begin(), model(parameters.data()));
@@ -145,10 +160,7 @@ int main() {
   //       std::transform_reduce( x_data, x_data + 7, y_data, hessian_reduce,
   //                             tst_functor(),  // reduce
   //                             [&parameters](const double input, const double measure) {
-  //                               Eigen::Matrix<double, 1, 2> ret;
-  //                               ret[0] = -input / (parameters[1] + input);
-  //                               ret[1] = (parameters[0] * input) / ((parameters[1] + input) * (parameters[1] +
-  //                               input)); return ret;
+  //                               ; return ret;
   //                             });  // transform
 
   //   std::cout << "Analytic Reduce:" << sum << std::endl;
@@ -165,4 +177,7 @@ int main() {
   // }
 }
 // ::transform takes 1 or 2 inputs and needs to assign outputs..
-// ::for_each only takes 1 inputs
+// ::for_each only takes 1 inputsEigen::Matrix<double, 1, 2> ret;
+//                               ret[0] = -input / (parameters[1] + input);
+//                               ret[1] = (parameters[0] * input) / ((parameters[1] + input) * (parameters[1] +
+//                               input))

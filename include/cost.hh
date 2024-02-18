@@ -4,13 +4,11 @@
 #include <algorithm>
 #include <numeric>
 
-#include "model.hh"
-#include "reduce.hh"
 
 namespace moptimizer {
 
 /// @brief Cost function class.
-/// @tparam In Input data type. Assume this is a vect
+/// @tparam In Input data type
 /// @tparam Out Measured data type.
 /// @tparam Scalar scalar primitive.
 template <class In, class Out, class Model, class Scalar = double>
@@ -20,7 +18,6 @@ class Cost {
   Cost(const Cost& rhs) = delete;
 
   /// @brief Cost function constructor.
-  /// @param model Model
   /// @param input input data iterator
   /// @param measurements measured data iterator
   /// @param num_elements number of elements.
@@ -32,11 +29,9 @@ class Cost {
   /// @return
   Scalar sum(const Scalar* x) const {
     Scalar total = 0.;
-    reduce_functor<Scalar> reducer;
     return std::transform_reduce(input_, input_ + num_elements_, measurements_, total,
-                                 reducer,    // reduce
-                                 Model(x));  // Transform
-    // transform
+                                 std::plus<Out>(),  // reduce. Use operator+() of Out.
+                                 Model(x));         // Transform
   }
 
   /// @brief Computes the hessian of a cost function numerically.
@@ -51,13 +46,21 @@ class Cost {
     using HessianType = Eigen::Matrix<Scalar, dim_parameter, dim_parameter>;
     using JacobianType = Eigen::Matrix<Scalar, dim_output, dim_parameter>;
     using ParameterType = Eigen::Matrix<Scalar, dim_parameter, 1>;
-    // using LinearizePair = std::pair<HessianType, ParameterType>;
+    struct ResultPair {
+      HessianType JTJ;    // JTJ -> Hessian
+      ParameterType JTr;  // JTr -> b
+      ResultPair() {
+        JTJ.setZero();
+        JTr.setZero();
+      }
+      ResultPair operator+(const ResultPair& rhs) {
+        this->JTJ += rhs.JTJ;
+        this->JTr += rhs.JTr;
+        return *this;
+      }
+    };
 
     Eigen::Map<const ParameterType> parameter(x);
-    HessianType hessian_;
-    ParameterType b_;
-    hessian_.setZero();
-    b_.setZero();
 
     Model model(x);
     std::vector<Model> models_plus;
@@ -72,27 +75,38 @@ class Cost {
       models_plus.push_back(Model(parameters_plus[p_dim].data()));
     }
 
-    auto numeric_jacobian = [&](const In& in, const Out& out) -> JacobianType {
+    // Returns [JTJ, JTb]
+    auto numeric_jacobian = [&](const In& in, const Out& out) -> ResultPair {
       JacobianType local_jacobian;
+      const auto&& residual = model(in, out);
       for (size_t p_dim = 0; p_dim < dim_parameter; ++p_dim) {
-        const auto&& diff = (models_plus[p_dim](in, out) - model(in, out)) / min_step_size;
+        const auto&& diff = (models_plus[p_dim](in, out) - residual) / min_step_size;
         if constexpr (dim_output == 1)
           local_jacobian[p_dim] = diff;
         else
           local_jacobian.col(p_dim) = diff;
       }
-      return local_jacobian;
+
+      HessianType&& local_hessian = local_jacobian.transpose() * local_jacobian;
+      ParameterType&& local_b = local_jacobian.transpose() * residual;
+      ResultPair res;
+      res.JTJ = local_hessian;
+      res.JTr = local_b;
+      return res;
     };
+    ResultPair res;
     // Perform reduction.
-    hessian_ = std::transform_reduce(input_, input_ + num_elements_, measurements_, hessian_,
-                                     // Reduce
-                                     reduce_functor_jacobian<HessianType, JacobianType>(),
-                                     // Transform (compute jacobian per data input)
-                                     numeric_jacobian
-    );
+    res = std::transform_reduce(
+        input_, input_ + num_elements_, measurements_, res,
+        // Reduce
+        [&](ResultPair init, const ResultPair& b) -> ResultPair { return init + b; },
+        // Transform (compute jacobian per data input)
+        numeric_jacobian);
     // Assign outputs
-    Eigen::Map<HessianType> ret(hessian);
-    ret = hessian_;
+    Eigen::Map<HessianType> ret_h(hessian);
+    Eigen::Map<ParameterType> ret_b(b);
+    ret_h = res.JTJ;
+    ret_b = res.JTr;
   }
 
  private:
