@@ -4,14 +4,18 @@
 #include <algorithm>
 #include <numeric>
 
+#include "jacobian.hh"
+#include "model.hh"
 
 namespace moptimizer {
 
 /// @brief Cost function class.
 /// @tparam In Input data type
 /// @tparam Out Measured data type.
+/// @tparam ModelT Fuctor of application model.
+/// @tparam JacobianModelT (optional)  Functor of jacobian model
 /// @tparam Scalar scalar primitive.
-template <class In, class Out, class Model, class Scalar = double>
+template <class In, class Out, class ModelT, class JacobianModelT = void*, class Scalar = double>
 class Cost {
  public:
   Cost() = delete;
@@ -22,7 +26,10 @@ class Cost {
   /// @param measurements measured data iterator
   /// @param num_elements number of elements.
   Cost(const In* input, const Out* measurements, size_t num_elements)
-      : input_(input), measurements_(measurements), num_elements_(num_elements) {}
+      : input_(input), measurements_(measurements), num_elements_(num_elements) {
+    static_assert(std::is_base_of<Model<In, Out, Scalar>, ModelT>::value,
+                  "ModelT must be inherited from moptimizer::Model");
+  }
 
   /// @brief Computes sum of errors
   /// @param x
@@ -31,10 +38,10 @@ class Cost {
     Scalar total = 0.;
     return std::transform_reduce(input_, input_ + num_elements_, measurements_, total,
                                  std::plus<Out>(),  // reduce. Use operator+() of Out.
-                                 Model(x));         // Transform
+                                 ModelT(x));        // Transform
   }
 
-  /// @brief Computes the hessian of a cost function numerically.
+  /// @brief Computes the hessian and b vector of a cost function.
   /// @tparam parameter_dim
   /// @param x
   /// @param hessian
@@ -46,67 +53,33 @@ class Cost {
     using HessianType = Eigen::Matrix<Scalar, dim_parameter, dim_parameter>;
     using JacobianType = Eigen::Matrix<Scalar, dim_output, dim_parameter>;
     using ParameterType = Eigen::Matrix<Scalar, dim_parameter, 1>;
-    struct ResultPair {
-      HessianType JTJ;    // JTJ -> Hessian
-      ParameterType JTr;  // JTr -> b
-      ResultPair() {
-        JTJ.setZero();
-        JTr.setZero();
-      }
-      ResultPair operator+(const ResultPair& rhs) {
-        this->JTJ += rhs.JTJ;
-        this->JTr += rhs.JTr;
-        return *this;
-      }
-    };
+    using ResultPair = jacobian_result_pair<dim_parameter, Scalar>;
 
-    Eigen::Map<const ParameterType> parameter(x);
-
-    Model model(x);
-    std::vector<Model> models_plus;
-    std::vector<ParameterType> parameters_plus(dim_parameter);
-
-    const Scalar min_step_size = std::sqrt(std::numeric_limits<Scalar>::epsilon());
-
-    // Prepare models.
-    for (size_t p_dim = 0; p_dim < dim_parameter; ++p_dim) {
-      parameters_plus[p_dim] = parameter;
-      parameters_plus[p_dim][p_dim] += min_step_size;
-      models_plus.push_back(Model(parameters_plus[p_dim].data()));
+    ResultPair result;
+    auto reduce_lambda = [&](ResultPair init, const ResultPair& b) -> ResultPair { return init + b; };
+    if constexpr (std::is_same<JacobianModelT, void*>::value) {
+      numeric_jacobian<dim_parameter, dim_output, ModelT, In, Out, Scalar> numeric_jacobian(x);
+      result = std::transform_reduce(input_, input_ + num_elements_, measurements_, result,
+                                     // Reduce
+                                     reduce_lambda,
+                                     // Transform
+                                     numeric_jacobian);
+    } else {
+      static_assert(std::is_base_of<JacobianModel<In, JacobianType, Scalar>, JacobianModelT>::value,
+                    "ModelT must be inherited from moptimizer::JacobianModel");
+      analytic_jacobian<dim_parameter, dim_output, ModelT, JacobianModelT, In, Out, Scalar> analytic_jacobian(x);
+      result = std::transform_reduce(input_, input_ + num_elements_, measurements_, result,
+                                     // Reduce
+                                     reduce_lambda,
+                                     // Transform
+                                     analytic_jacobian);
     }
 
-    // Returns [JTJ, JTb]
-    auto numeric_jacobian = [&](const In& in, const Out& out) -> ResultPair {
-      JacobianType local_jacobian;
-      const auto&& residual = model(in, out);
-      for (size_t p_dim = 0; p_dim < dim_parameter; ++p_dim) {
-        const auto&& diff = (models_plus[p_dim](in, out) - residual) / min_step_size;
-        if constexpr (dim_output == 1)
-          local_jacobian[p_dim] = diff;
-        else
-          local_jacobian.col(p_dim) = diff;
-      }
-
-      HessianType&& local_hessian = local_jacobian.transpose() * local_jacobian;
-      ParameterType&& local_b = local_jacobian.transpose() * residual;
-      ResultPair res;
-      res.JTJ = local_hessian;
-      res.JTr = local_b;
-      return res;
-    };
-    ResultPair res;
-    // Perform reduction.
-    res = std::transform_reduce(
-        input_, input_ + num_elements_, measurements_, res,
-        // Reduce
-        [&](ResultPair init, const ResultPair& b) -> ResultPair { return init + b; },
-        // Transform (compute jacobian per data input)
-        numeric_jacobian);
     // Assign outputs
     Eigen::Map<HessianType> ret_h(hessian);
     Eigen::Map<ParameterType> ret_b(b);
-    ret_h = res.JTJ;
-    ret_b = res.JTr;
+    ret_h = result.JTJ;
+    ret_b = result.JTr;
   }
 
  private:
